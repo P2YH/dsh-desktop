@@ -8,6 +8,7 @@ import type {
 import type { LocaleId } from '@deepseek-ai/dsh-client-locale'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { ThemePreference } from '@deepseek-ai/dsh-client-ui-theme'
+import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   apply,
@@ -18,9 +19,6 @@ import {
   inject,
   type Config as DesktopConfig,
   type DesktopSettings,
-  ARCHITECTURE_REVIEW_REVIEW_PREFIX,
-  ARCHITECTURE_REVIEW_REVIEWS_PATH,
-  ARCHITECTURE_REVIEW_WORKSPACE_PATH,
 } from '../src/index.ts'
 import {
   DESKTOP_DIRECTORY_PICKER_PATH,
@@ -219,11 +217,11 @@ function createHarness(
     notify: async (next, prev) => { await watcher?.(next, prev) },
     notifyLocale: (preference) => {
       localePreference = preference
-      for (const listener of settingsUpdated) listener('locale', { preference })
+      for (const listener of settingsUpdated) listener(settingsNamespace('locale'), { preference })
     },
     notifyTheme: (preference) => {
       themePreference = preference
-      for (const listener of settingsUpdated) listener('ui-theme', { preference })
+      for (const listener of settingsUpdated) listener(settingsNamespace('ui-theme'), { preference })
     },
   }
 }
@@ -349,7 +347,7 @@ describe('desktop Host plugin', () => {
       mode: 'compatibility',
       url: 'http://127.0.0.1:43120/?dsh-desktop-mode=compatibility&dsh-desktop-platform=darwin&dsh-desktop-version=2.0.0&dsh-desktop-material=transparent&dsh-desktop-titlebar-inset=36',
       authenticationUrl: 'http://127.0.0.1:43120/?token=test-token',
-      productName: 'DSH Desktop Beta',
+      productName: 'DSH Desktop',
       windowTitle: 'DeepSeek Harness Desktop',
       rendererAccessHeader: {
         name: 'x-dsh-desktop-renderer',
@@ -433,9 +431,6 @@ describe('desktop Host plugin', () => {
       RENDERER_BOOT_REPORT_PATH,
       DESKTOP_DIRECTORY_PICKER_PATH,
       DESKTOP_DIRECTORY_VALIDATOR_PATH,
-      ARCHITECTURE_REVIEW_WORKSPACE_PATH,
-      ARCHITECTURE_REVIEW_REVIEWS_PATH,
-      ARCHITECTURE_REVIEW_REVIEW_PREFIX,
     ].sort()
     const routes = harness.routes().filter(route => route.path !== DESKTOP_LAN_HTTPS_CA_PATH)
     expect(routes.map(route => route.path).sort()).toEqual(expectedPaths)

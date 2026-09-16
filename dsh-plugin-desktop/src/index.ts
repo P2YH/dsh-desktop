@@ -79,23 +79,9 @@ import {
   windowsSupportsMica,
 } from './window-material.ts'
 import { DESKTOP_PRODUCT_NAME } from './product-identity.ts'
-import {
-  ARCHITECTURE_REVIEW_REVIEW_PREFIX,
-  ARCHITECTURE_REVIEW_REVIEWS_PATH,
-  ARCHITECTURE_REVIEW_WORKSPACE_PATH,
-  ArchitectureReviewService,
-  handleArchitectureReviewRequest,
-} from './architecture-review.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'desktop-shell'
-
-// Public contracts for the file-backed Architecture Review Host routes.
-export {
-  ArchitectureReviewService,
-  handleArchitectureReviewRequest,
-} from './architecture-review.ts'
-export * from './architecture-review-contract.ts'
 
 /** Services required before the shell can register its renderer generation. */
 /** Services required by the desktop shell; `desktopRuntime` is probed, not required. */
@@ -275,41 +261,6 @@ export function apply(ctx: Context, config: Config): void {
     },
   )
   const rendererOrigin = `http://127.0.0.1:${String(ctx.webServer.port)}`
-  // The workspace is intentionally file-backed and opt-in. A profile may set
-  // DSH_ARCHITECTURE_REVIEW_WORKSPACE to restore the last selected workspace;
-  // the renderer can also initialize it through the workspace route.
-  const architectureReview = new ArchitectureReviewService(
-    process.env.DSH_ARCHITECTURE_REVIEW_WORKSPACE,
-  )
-  for (const path of [ARCHITECTURE_REVIEW_WORKSPACE_PATH, ARCHITECTURE_REVIEW_REVIEWS_PATH]) {
-    ctx.effect(
-      () => ctx.webServer.register({
-        kind: 'exact',
-        path,
-        handler: (req, res) => {
-          if (rejectDesktopRequest(ctx, req, res)) return
-          return handleArchitectureReviewRequest(req, res, rendererOrigin, architectureReview, path)
-        },
-      }),
-      `dsh-plugin-desktop: architecture review route ${path}`,
-    )
-  }
-  ctx.effect(
-    () => ctx.webServer.register({
-      kind: 'prefix',
-      path: ARCHITECTURE_REVIEW_REVIEW_PREFIX,
-      handler: (req, res) => {
-        if (rejectDesktopRequest(ctx, req, res)) return
-        const requestPath = new URL(req.url ?? '/', rendererOrigin).pathname
-        return handleArchitectureReviewRequest(req, res, rendererOrigin, architectureReview, requestPath)
-      },
-    }),
-    'dsh-plugin-desktop: architecture review detail routes',
-  )
-  ctx.effect(
-    () => () => { /* service state is generation-scoped; pending work is request-scoped */ },
-    'dsh-plugin-desktop: architecture review service lifetime',
-  )
   ctx.effect(
     () => ctx.webServer.register({
       kind: 'exact',
