@@ -18,6 +18,9 @@ import {
   inject,
   type Config as DesktopConfig,
   type DesktopSettings,
+  ARCHITECTURE_REVIEW_REVIEW_PREFIX,
+  ARCHITECTURE_REVIEW_REVIEWS_PATH,
+  ARCHITECTURE_REVIEW_WORKSPACE_PATH,
 } from '../src/index.ts'
 import {
   DESKTOP_DIRECTORY_PICKER_PATH,
@@ -430,6 +433,9 @@ describe('desktop Host plugin', () => {
       RENDERER_BOOT_REPORT_PATH,
       DESKTOP_DIRECTORY_PICKER_PATH,
       DESKTOP_DIRECTORY_VALIDATOR_PATH,
+      ARCHITECTURE_REVIEW_WORKSPACE_PATH,
+      ARCHITECTURE_REVIEW_REVIEWS_PATH,
+      ARCHITECTURE_REVIEW_REVIEW_PREFIX,
     ].sort()
     const routes = harness.routes().filter(route => route.path !== DESKTOP_LAN_HTTPS_CA_PATH)
     expect(routes.map(route => route.path).sort()).toEqual(expectedPaths)

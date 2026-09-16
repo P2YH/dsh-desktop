@@ -9,6 +9,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { applyAdvancedShell } from './advanced-shell.ts'
+import { applyArchitectureReview } from './architecture-review.tsx'
 import { startRendererBootReporter } from './boot-health.ts'
 import { applyDesktopSettings } from './desktop-settings.ts'
 import { installDesktopDirectoryPickerBridge } from './directory-picker.ts'
@@ -17,6 +18,7 @@ import { applyExtendedShell } from './extended-shell.ts'
 import { desktopWindowService, provideDesktopWindow } from './window-service.ts'
 
 export { applyAdvancedShell } from './advanced-shell.ts'
+export { applyArchitectureReview, ARCHITECTURE_REVIEW_PANEL_ID } from './architecture-review.tsx'
 export { applyDesktopSettings } from './desktop-settings.ts'
 export { applyExtendedShell, applyFramedShell } from './extended-shell.ts'
 export {
@@ -83,6 +85,10 @@ export const inject = [
 export function apply(ctx: ClientContext): void {
   const environment = parseDesktopClientEnvironment(window.location.search)
   if (!environment) return
+  // The compatibility profile must keep the upstream client composition
+  // untouched; the architecture workbench is available in Desktop-owned
+  // extended and advanced presentations.
+  if (environment.mode !== 'compatibility') applyArchitectureReview(ctx)
   ctx.effect(
     () => provideDesktopWindow(ctx, desktopWindowService(environment)),
     'dsh-plugin-desktop: native window geometry service',
