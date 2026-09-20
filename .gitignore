@@ -11,6 +11,7 @@ node_modules/
 
 dsh-plugin-desktop/dist/
 dsh-plugin-desktop/lib/
+dsh-plugin-architecture-review/lib/
 dsh-community-market/lib/
 
 .env.yarn

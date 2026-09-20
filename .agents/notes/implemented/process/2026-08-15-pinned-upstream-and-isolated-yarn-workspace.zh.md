@@ -12,13 +12,13 @@ DSH Desktop 需要保留可供审查的 DeepSeek Harness 官方精确源码，�
 
 [`deepseek-harness/`](../../../../deepseek-harness/) 是 Git 子模块，固定到 [`upstream.json`](../../../../upstream.json) 记录的官方仓库和精确提交。桌面分支把该子模块视为只读内容。更新上游时，在独立提交中同时修改 gitlink 与元数据。
 
-外层 README 文件和资源由产品仓库拥有，并保留 `anywhere-labs/deepseek-harness-desktop` 已有的 DSH Desktop 落地页；这些内容不从官方源码子模块派生。Desktop package 的初始化与发行文档属于 [`dsh-plugin-desktop/README.md`](../../../../dsh-plugin-desktop/README.md)；规划中的社区互操作 contract 属于 [`dsh-community-fabric/README.zh.md`](../../../../dsh-community-fabric/README.zh.md)；规划中的社区市场产品与信任边界属于 [`dsh-community-market/README.zh.md`](../../../../dsh-community-market/README.zh.md)。
+外层 README 文件和资源由产品仓库拥有，并保留 `anywhere-labs/deepseek-harness-desktop` 已有的 DSH Desktop 落地页；这些内容不从官方源码子模块派生。Desktop package 的初始化与发行文档属于 [`dsh-plugin-desktop/README.md`](../../../../dsh-plugin-desktop/README.md)；独立架构评审插件的文档属于 [`dsh-plugin-architecture-review/README.md`](../../../../dsh-plugin-architecture-review/README.md)；规划中的社区互操作 contract 属于 [`dsh-community-fabric/README.zh.md`](../../../../dsh-community-fabric/README.zh.md)；规划中的社区市场产品与信任边界属于 [`dsh-community-market/README.zh.md`](../../../../dsh-community-market/README.zh.md)。
 
-外层仓库是使用 `node_modules` linker 的 Yarn 4 工作区。自有 workspace 成员是 [`dsh-plugin-desktop`](../../../../dsh-plugin-desktop/)、[`dsh-community-fabric`](../../../../dsh-community-fabric/) 和 [`dsh-community-market`](../../../../dsh-community-market/)。Fabric 从私有文档初始化工程开始：在社区 Draft 拥有经过评审的 contract 与一致性证据前，不提供 runtime 入口、SDK、正式 schema 或 DSH bundle。Market 同样从私有文档初始化工程开始：在市场壳具备实现和 Loader 证据前，不提供运行入口或 DSH bundle。上游 checkout 按照自己的[包管理器决策](../../../../deepseek-harness/.agents/notes/implemented/process/2026-06-16-pnpm-over-yarn.zh.md)保持为独立的 pnpm 工作区。根目录的 `upstream:*` 脚本通过 Yarn portable shell 进入子模块，再由 Corepack 调用上游固定的 pnpm 版本。
+外层仓库是使用 `node_modules` linker 的 Yarn 4 工作区。自有 workspace 成员是 [`dsh-plugin-desktop`](../../../../dsh-plugin-desktop/)、[`dsh-plugin-architecture-review`](../../../../dsh-plugin-architecture-review/)、[`dsh-community-fabric`](../../../../dsh-community-fabric/) 和 [`dsh-community-market`](../../../../dsh-community-market/)。架构评审是独立的 DSH Profile bundle，只能使用公开的 Host 和 Web Client contract，不能依赖 Electron 或 Desktop 私有服务。Fabric 从私有文档初始化工程开始：在社区 Draft 拥有经过评审的 contract 与一致性证据前，不提供 runtime 入口、SDK、正式 schema 或 DSH bundle。Market 同样从私有文档初始化工程开始：在市场壳具备实现和 Loader 证据前，不提供运行入口或 DSH bundle。上游 checkout 按照自己的[包管理器决策](../../../../deepseek-harness/.agents/notes/implemented/process/2026-06-16-pnpm-over-yarn.zh.md)保持为独立的 pnpm 工作区。根目录的 `upstream:*` 脚本通过 Yarn portable shell 进入子模块，再由 Corepack 调用上游固定的 pnpm 版本。
 
 普通桌面构建从 npm registry 解析已发布的 DSH 包，不从子模块链接源码。`upstream.json` 分别记录源码版本和运行时包 family。固定的 GitHub 公开源码和桌面运行时现在都使用已发布的 `0.1.0-rc.8` family；当 npm artifact 没有发布对应源码提交时，仓库不会虚构两者的对应关系。
 
-`yarn check:layout` 会拒绝变化的子模块 URL、提交、工作树、包管理边界、自有 workspace 成员列表或 DSH 运行时 family。根检查会先运行轻量的 Fabric 和 Market 文档门禁，再运行完整 Desktop 门禁。CI 会初始化子模块，以 immutable 模式安装外层工作区，运行自有 package 检查，并在 Windows 上执行上游命令路径。
+`yarn check:layout` 会拒绝变化的子模块 URL、提交、工作树、包管理边界、自有 workspace 成员列表、架构评审运行依赖边界或 DSH 运行时 family。根检查会运行独立架构评审检查以及轻量的 Fabric 和 Market 文档门禁，再运行完整 Desktop 门禁。CI 会初始化子模块，以 immutable 模式安装外层工作区，运行自有 package 检查，并在 Windows 上执行上游命令路径。
 
 ## Verification
 
@@ -38,6 +38,6 @@ DSH Desktop 需要保留可供审查的 DeepSeek Harness 官方精确源码，�
 
 ## Consequences
 
-桌面改动有三个边界明确的自有 package tree，官方 checkout 可以与其远端提交直接比较。外层落地页展示 DSH Desktop，Desktop README 负责应用初始化与发行说明，Fabric README 负责规划中的社区 contract 边界，Market README 负责规划中的市场边界。产品安装与检查可由外层 Yarn lockfile 复现，上游验证则继续使用自己的 pnpm lockfile。
+桌面改动有四个边界明确的自有 package，官方 checkout 可以与其远端提交直接比较。外层落地页展示 DSH Desktop，Desktop README 负责应用初始化与发行说明，架构评审 README 负责可独立安装的 Profile bundle，Fabric README 负责规划中的社区 contract 边界，Market README 负责规划中的市场边界。产品安装与检查可由外层 Yarn lockfile 复现，上游验证则继续使用自己的 pnpm lockfile。
 
 克隆时必须初始化子模块，贡献者也需要维护两套有意隔离的包管理器缓存。GitHub 公开修订与 npm 发布 family 可能不对应，因此源码 pin 更新和运行时 family 更新需要分别提供验证证据。

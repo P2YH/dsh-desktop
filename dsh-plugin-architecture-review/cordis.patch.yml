@@ -1,0 +1,5 @@
+# Load the standalone Host/Client plugin when this package is listed in a
+# profile's dsh.profile.bundles array.
+- insert:
+    - id: architecture-review
+      name: dsh-plugin-architecture-review

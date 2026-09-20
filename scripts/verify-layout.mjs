@@ -15,12 +15,16 @@ const workspace = readJson('package.json')
 const upstream = readJson('upstream.json')
 const stablePlugin = readJson('dsh-plugin-desktop/package.json')
 const betaPlugin = readJson('dsh-plugin-desktop-beta/package.json')
+const architectureReviewPlugin = readJson('dsh-plugin-architecture-review/package.json')
 const fabric = readJson('dsh-community-fabric/package.json')
 const market = readJson('dsh-community-market/package.json')
 const upstreamPackage = readJson('deepseek-harness/package.json')
 
 if (stablePlugin.name !== 'dsh-plugin-desktop') fail('the stable Desktop workspace must retain dsh-plugin-desktop')
 if (betaPlugin.name !== 'dsh-plugin-desktop-beta') fail('the Beta Desktop workspace must publish as dsh-plugin-desktop-beta')
+if (architectureReviewPlugin.name !== 'dsh-plugin-architecture-review') {
+  fail('the Architecture Review workspace must publish as dsh-plugin-architecture-review')
+}
 if (!['stable', 'beta'].includes(upstream.activeChannel)) fail('the pinned upstream checkout must follow a declared release channel')
 const activeUpstream = upstream.channels?.[upstream.activeChannel]
 if (activeUpstream === undefined) fail('the active upstream channel is missing')
@@ -31,14 +35,16 @@ if (workspace.packageManager !== 'yarn@4.18.0') {
 if (JSON.stringify(workspace.workspaces) !== JSON.stringify([
   'dsh-plugin-desktop',
   'dsh-plugin-desktop-beta',
+  'dsh-plugin-architecture-review',
   'dsh-community-fabric',
   'dsh-community-market',
 ])) {
-  fail('the root Yarn workspace must contain the desktop, community-fabric, and community-market packages')
+  fail('the root Yarn workspace must contain the desktop, architecture-review, community-fabric, and community-market packages')
 }
 for (const [name, manifest] of [
   ['dsh-plugin-desktop', stablePlugin],
   ['dsh-plugin-desktop-beta', betaPlugin],
+  ['dsh-plugin-architecture-review', architectureReviewPlugin],
   ['dsh-community-fabric', fabric],
   ['dsh-community-market', market],
 ]) {
@@ -46,6 +52,13 @@ for (const [name, manifest] of [
 }
 if (fabric.name !== 'dsh-community-fabric') fail('the Fabric workspace must own dsh-community-fabric')
 if (market.name !== 'dsh-community-market') fail('the market workspace must own dsh-community-market')
+if (architectureReviewPlugin.dsh?.bundle?.patch !== './cordis.patch.yml') {
+  fail('the Architecture Review package must expose its Profile bundle patch')
+}
+if (JSON.stringify(Object.keys(architectureReviewPlugin.dependencies ?? {}).sort())
+  !== JSON.stringify(['@deepseek-ai/dsh-atomic-write'])) {
+  fail('the Architecture Review package must retain its one-package runtime dependency boundary')
+}
 const claudePath = resolve(root, 'CLAUDE.md')
 const claudeStat = lstatSync(claudePath)
 // Windows checkouts materialize the symlink as a regular file holding the
@@ -63,6 +76,8 @@ for (const legacyFile of [
   'dsh-plugin-desktop/pnpm-workspace.yaml',
   'dsh-plugin-desktop-beta/pnpm-lock.yaml',
   'dsh-plugin-desktop-beta/pnpm-workspace.yaml',
+  'dsh-plugin-architecture-review/pnpm-lock.yaml',
+  'dsh-plugin-architecture-review/pnpm-workspace.yaml',
   'dsh-community-fabric/pnpm-lock.yaml',
   'dsh-community-fabric/pnpm-workspace.yaml',
   'dsh-community-market/pnpm-lock.yaml',
@@ -84,6 +99,7 @@ for (const [owner, manifest] of [
   ['root', workspace],
   ['stable desktop', stablePlugin],
   ['beta desktop', betaPlugin],
+  ['architecture review', architectureReviewPlugin],
   ['fabric', fabric],
   ['market', market],
 ]) {
