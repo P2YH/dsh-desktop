@@ -743,7 +743,12 @@ export class ArchitectureReviewService {
       ]
       await writeFileAtomic(join(directory, 'sources.md'), lines.join('\n'), { mode: 0o600, dirMode: 0o700 })
       await this.appendFileAtomic('wiki/log.md', `${new Date().toISOString()} ingest review ${reviewId}\n`)
-      return { artifactCount: artifacts.length, mode: 'local-summary' }
+      return {
+        artifactCount: artifacts.length,
+        readableCount: artifacts.filter(artifact => artifact.parseStatus === 'ready').length,
+        unreadableNames: artifacts.filter(artifact => artifact.parseStatus !== 'ready').map(artifact => artifact.name),
+        mode: 'material-submission',
+      }
     })
   }
 
@@ -868,14 +873,11 @@ export class ArchitectureReviewService {
     const root = this.requireRoot()
     if (review.basisPaths.length === 0) throw new Error('selected experts must reference review standards')
     const standards = new Map((await this.listStandards()).map(item => [item.path, item]))
-    const selected = review.basisPaths.map(path => {
-      const standard = standards.get(path)
-      if (standard === undefined) throw new Error(`review standard is missing: ${path}`)
-      return standard
-    })
+    const missingStandards = review.basisPaths.filter(path => !standards.has(path))
+    if (missingStandards.length > 0) throw new Error(`review standards are missing: ${missingStandards.join('、')}`)
+    const selected = review.basisPaths.map(path => standards.get(path)!)
     const startedAt = new Date().toISOString()
     await this.ingestReview(reviewId)
-    await this.runReview(reviewId)
     const run = await this.changeRun(reviewId, async current => {
       if (current?.status === 'starting' || current?.status === 'reviewing') throw new Error('expert review is running')
       return {
@@ -1092,17 +1094,13 @@ export class ArchitectureReviewService {
     if (input.result === 'approved' && candidates.some(item => item.limitations.length > 0 || !item.evidence.some(evidence => run.sources.some(source => evidence.includes(source.path))))) {
       throw new Error('unreserved approval requires verified original evidence')
     }
-    const findings = await this.readFindings(reviewId)
-    const unresolvedBlocker = findings.some(finding => finding.severity === 'Blocker'
-      && !['resolved', 'accepted-risk', 'rejected'].includes(finding.status))
-    if (unresolvedBlocker) throw new Error('unconfirmed Blocker findings must be resolved before a decision')
     const root = this.requireRoot()
     const directory = join(root, 'wiki/reviews', reviewId)
     const updatedAt = new Date().toISOString()
     const decisionPath = `wiki/reviews/${reviewId}/decision.md`
     const reportPath = `wiki/reviews/${reviewId}/report.md`
     const decision = `---\nreview_id: ${reviewId}\nstatus: ${input.result}\nupdated_at: ${updatedAt}\n---\n\n# 架构评审决策\n\n结果：${input.result}\n\n${reason}\n`
-    const report = `# 架构评审报告 ${reviewId}\n\n- 决策：${input.result}\n- 更新时间：${updatedAt}\n- 运行 ID：${run.runId}\n- 资料版本：${run.sourceVersion}\n- 资料快照：${run.sources.map(source => `${source.path} (SHA-256 ${source.sha256})`).join('；')}\n- 评审依据：${run.standards.map(item => `${item.path} (SHA-256 ${item.sha256})`).join('；')}\n- 专家目录 SHA-256：${run.catalogVersion}\n- 决策说明：${reason || '无'}\n\n## 专家任务\n\n${run.experts.map(expert => `### ${expert.name} (${expert.expertId})\n\n- 状态：${expert.status}\n- 会话：${expert.sessionId ?? '未启动'}\n- 限制：${expert.error ?? '无'}\n\n${expert.conclusion ?? '无结论'}\n`).join('\n')}\n## 人工处理的候选问题\n\n${candidates.length === 0 ? '未形成候选问题。' : candidates.map(item => `### ${item.title}\n\n- 人工判断：${CANDIDATE_STATUS_LABELS[item.status]}\n- 来源专家：${item.expertIds.join('、')}\n- 支持证据：${item.evidence.join('；') || '无'}\n- 反证：${item.counterEvidence.join('；') || '无'}\n- 未核实限制：${item.limitations.join('；') || '无'}\n- 判断依据：${item.reason ?? '无'}\n\n${item.opinions.map(opinion => `- ${opinion.expertId}：${opinion.text}`).join('\n')}\n`).join('\n')}\n## 本地预检\n\n${findings.length === 0 ? '没有本地预检缺失项。' : findings.map(finding => `### ${finding.title}\n\n- 严重度：${finding.severity}\n- 状态：${finding.status}\n- 证据：${finding.evidence.join(', ') || '无'}\n\n${finding.problem}\n`).join('\n')}\n`
+    const report = `# 架构评审报告 ${reviewId}\n\n- 决策：${input.result}\n- 更新时间：${updatedAt}\n- 运行 ID：${run.runId}\n- 资料版本：${run.sourceVersion}\n- 资料快照：${run.sources.map(source => `${source.path} (SHA-256 ${source.sha256})`).join('；')}\n- 评审依据：${run.standards.map(item => `${item.path} (SHA-256 ${item.sha256})`).join('；')}\n- 专家目录 SHA-256：${run.catalogVersion}\n- 决策说明：${reason || '无'}\n\n## 专家任务\n\n${run.experts.map(expert => `### ${expert.name} (${expert.expertId})\n\n- 状态：${expert.status}\n- 会话：${expert.sessionId ?? '未启动'}\n- 限制：${expert.error ?? '无'}\n\n${expert.conclusion ?? '无结论'}\n`).join('\n')}\n## 人工处理的候选问题\n\n${candidates.length === 0 ? '未形成候选问题。' : candidates.map(item => `### ${item.title}\n\n- 人工判断：${CANDIDATE_STATUS_LABELS[item.status]}\n- 来源专家：${item.expertIds.join('、')}\n- 支持证据：${item.evidence.join('；') || '无'}\n- 反证：${item.counterEvidence.join('；') || '无'}\n- 未核实限制：${item.limitations.join('；') || '无'}\n- 判断依据：${item.reason ?? '无'}\n\n${item.opinions.map(opinion => `- ${opinion.expertId}：${opinion.text}`).join('\n')}\n`).join('\n')}\n`
     await writeFileAtomic(join(directory, 'decision.md'), decision, { mode: 0o600, dirMode: 0o700 })
     await writeFileAtomic(join(directory, 'report.md'), report, { mode: 0o600, dirMode: 0o700 })
     await this.writeReviewStatus(reviewId, 'completed')
@@ -1395,7 +1393,7 @@ function requestError(cause: unknown): { status: number; message: string } {
   if (message === 'a reason is required for this finding status' || message === 'a reason is required for a rejected or changes-requested decision'
     || message === 'finding status transition is invalid' || message === 'finding evidence is required for confirmation'
     || message === 'run the review before creating a decision' || message === 'unconfirmed Blocker findings must be resolved before a decision'
-    || message.startsWith('review standard is missing') || message.startsWith('selected review standard is missing') || message.startsWith('unreserved approval')
+    || message.startsWith('review standard is missing') || message.startsWith('review standards are missing') || message.startsWith('selected review standard is missing') || message.startsWith('unreserved approval')
     || message.startsWith('finish expert review') || message.startsWith('incomplete expert review')
     || message.startsWith('finish decision before exporting')
     || message.startsWith('review materials changed') || message.startsWith('review basis changed') || message.startsWith('selected experts changed') || message.startsWith('candidate issues require')

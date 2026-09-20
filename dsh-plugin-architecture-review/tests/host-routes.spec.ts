@@ -212,7 +212,34 @@ describe('Architecture Review Host routes', () => {
     expect(oversized.status).toBe(413)
   })
 
-  it('runs the local artifact, lint, finding, decision, operation, and export workflow', async () => {
+  it('keeps the legacy local-check route available', async () => {
+    const rejection: { value: 401 | 403 | undefined } = { value: undefined }
+    const { base, root } = await startHost(rejection)
+    await fetch(`${base}${ARCHITECTURE_REVIEW_WORKSPACE_PATH}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: root }),
+    })
+    const created = await fetch(`${base}${ARCHITECTURE_REVIEW_REVIEWS_PATH}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: '旧版本地检查' }),
+    })
+    const { reviewId } = await created.json() as { reviewId: string }
+    await fetch(`${base}${ARCHITECTURE_REVIEW_REVIEWS_PATH}/${reviewId}/artifacts`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'architecture.md', content: '# 系统设计\n' }),
+    })
+
+    const run = await fetch(`${base}${ARCHITECTURE_REVIEW_REVIEWS_PATH}/${reviewId}/run`, { method: 'POST' })
+    expect(run.status).toBe(202)
+    await expect(run.json()).resolves.toMatchObject({
+      status: 'completed',
+      result: { mode: 'local-check', artifactCount: 1, findingCount: 1 },
+    })
+    await expect((await fetch(`${base}${ARCHITECTURE_REVIEW_REVIEWS_PATH}/${reviewId}`)).json())
+      .resolves.toMatchObject({ status: 'prechecked' })
+    await expect((await fetch(`${base}${ARCHITECTURE_REVIEW_REVIEWS_PATH}/${reviewId}/findings`)).json())
+      .resolves.toMatchObject({ findings: [expect.objectContaining({ title: '专家引用的评审规范尚未齐全' })] })
+  })
+
+  it('runs the material, expert, decision, lint, operation, and export workflow', async () => {
     const rejection: { value: 401 | 403 | undefined } = { value: undefined }
     const { base, root } = await startHost(rejection)
     await fetch(`${base}${ARCHITECTURE_REVIEW_WORKSPACE_PATH}`, {
@@ -254,46 +281,10 @@ describe('Architecture Review Host routes', () => {
 
     const ingest = await fetch(`${base}${ARCHITECTURE_REVIEW_REVIEWS_PATH}/${review.reviewId}/ingest`, { method: 'POST' })
     expect(ingest.status).toBe(202)
-    const ingestOperation = await ingest.json() as { operationId: string; status: string }
+    const ingestOperation = await ingest.json() as { operationId: string; status: string; result: Record<string, unknown> }
     expect(ingestOperation.status).toBe('completed')
-
-    const run = await fetch(`${base}${ARCHITECTURE_REVIEW_REVIEWS_PATH}/${review.reviewId}/run`, { method: 'POST' })
-    expect(run.status).toBe(202)
-    const runOperation = await run.json() as { operationId: string; result: { findingCount: number; selectedRuleIds: string[] } }
-    expect(runOperation.result.findingCount).toBe(1)
-    expect(runOperation.result.selectedRuleIds).toEqual(['security'])
-    const runningReview = await fetch(`${base}${ARCHITECTURE_REVIEW_REVIEWS_PATH}/${review.reviewId}`)
-    await expect(runningReview.json()).resolves.toMatchObject({ status: 'prechecked', ruleIds: ['security'] })
-
-    const findingsResponse = await fetch(`${base}${ARCHITECTURE_REVIEW_REVIEWS_PATH}/${review.reviewId}/findings`)
-    const findingsPayload = await findingsResponse.json() as { findings: Array<{ findingId: string; status: string }> }
-    expect(findingsPayload.findings).toHaveLength(1)
-    const finding = findingsPayload.findings[0]!
-    const findingUpdate = await fetch(`${base}/api/architecture-review/findings/${finding.findingId}`, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ status: 'confirmed' }),
-    })
-    expect(findingUpdate.status).toBe(400)
-    const missingReason = await fetch(`${base}/api/architecture-review/findings/${finding.findingId}`, {
-      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'accepted-risk' }),
-    })
-    expect(missingReason.status).toBe(400)
-    const accepted = await fetch(`${base}/api/architecture-review/findings/${finding.findingId}`, {
-      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'accepted-risk', reason: '规范文件暂缺，评审人接受该范围限制' }),
-    })
-    expect(accepted.status).toBe(200)
-    await expect(accepted.json()).resolves.toMatchObject({ status: 'accepted-risk', reason: '规范文件暂缺，评审人接受该范围限制' })
-    const reopen = await fetch(`${base}/api/architecture-review/findings/${finding.findingId}`, {
-      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'proposed' }),
-    })
-    expect(reopen.status).toBe(200)
-    const invalidTransition = await fetch(`${base}/api/architecture-review/findings/${finding.findingId}`, {
-      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'resolved' }),
-    })
-    expect(invalidTransition.status).toBe(400)
-    await fetch(`${base}/api/architecture-review/findings/${finding.findingId}`, {
-      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'rejected', reason: '缺失的规范文件不属于本次范围' }),
+    expect(ingestOperation.result).toEqual({
+      artifactCount: 1, readableCount: 1, unreadableNames: [], mode: 'material-submission',
     })
 
     await writeFile(join(root, 'raw/sources/standards/security.md'), '# 安全规范\n')

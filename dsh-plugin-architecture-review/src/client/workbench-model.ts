@@ -73,7 +73,7 @@ export function withWorkbenchRoute(input: string | URL, route: WorkbenchRoute): 
 export function reviewStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     draft: '草稿',
-    prechecked: '已预检',
+    prechecked: '资料已提交',
     queued: '等待中',
     reviewing: '评审中',
     'human-review': '待人工确认',

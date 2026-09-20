@@ -50,7 +50,6 @@ describe('Architecture Review workspace', () => {
     const second = await service.createReview({ title: '保留项目' })
     await service.importArtifact(first.reviewId, { name: 'design.md', content: '# 原始资料' })
     await service.ingestReview(first.reviewId)
-    await service.runReview(first.reviewId)
     const outside = await tempRoot('dsh-architecture-review-external-')
     await writeFile(join(outside, 'keep.txt'), '外部文件')
     await symlink(outside, join(root, 'wiki/reviews', first.reviewId, 'external-link'), 'junction')
@@ -69,45 +68,56 @@ describe('Architecture Review workspace', () => {
     await expect(service.deleteReview(first.reviewId)).rejects.toThrow('review not found')
   })
 
-  it('accepts a text PDF as review material, indexes its pages, and keeps an image-only PDF blocked', async () => {
+  it('reports readable and stored-only files when submitting review materials', async () => {
     const { root, service } = await workspace()
     const review = await service.createReview({ title: 'PDF 资料预检' })
     const original = await service.importArtifact(review.reviewId, { name: 'design.pdf', contentBase64: pdfFixture('Architecture review material').toString('base64') })
     expect(original.parseStatus).toBe('ready')
     const scan = await service.importArtifact(review.reviewId, { name: 'scan.pdf', contentBase64: pdfFixture('').toString('base64') })
     expect(scan.parseStatus).toBe('stored-only')
-    await service.ingestReview(review.reviewId)
+    const submission = await service.ingestReview(review.reviewId)
+    expect(submission).toMatchObject({
+      type: 'ingest',
+      status: 'completed',
+      result: { artifactCount: 2, readableCount: 1, unreadableNames: ['scan.pdf'], mode: 'material-submission' },
+    })
     expect((await service.artifactContent(review.reviewId, 'design.pdf')).content).toContain('第 1 页\n\nArchitecture review material')
     expect((await service.artifactContent(review.reviewId, 'scan.pdf')).content).toBeNull()
     const textPath = join(root, 'wiki/reviews', review.reviewId, 'extracted', `${original.sha256}.md`)
     expect(await readFile(textPath, 'utf8')).toContain('Architecture review material')
     expect(await readFile(join(root, 'wiki/reviews', review.reviewId, 'sources.md'), 'utf8')).toContain(`extracted/${original.sha256}.md`)
-    await service.runReview(review.reviewId)
-    expect((await service.listFindings(review.reviewId)).some(finding => finding.title === '缺少评审资料')).toBe(false)
-    const scannedReview = await service.createReview({ title: '扫描件预检' })
+    const scannedReview = await service.createReview({ title: '扫描件提交' })
     await service.importArtifact(scannedReview.reviewId, { name: 'scan.pdf', contentBase64: pdfFixture('').toString('base64') })
-    await service.runReview(scannedReview.reviewId)
-    expect((await service.listFindings(scannedReview.reviewId))[0]?.title).toBe('缺少可读取的评审资料')
+    await expect(service.ingestReview(scannedReview.reviewId)).resolves.toMatchObject({
+      result: { artifactCount: 1, readableCount: 0, unreadableNames: ['scan.pdf'], mode: 'material-submission' },
+    })
+    await expect(service.listArtifactsForReview(scannedReview.reviewId)).resolves.toEqual([
+      expect.objectContaining({ name: 'scan.pdf', parseStatus: 'stored-only' }),
+    ])
   })
   it('gates expert launch, records six real outcomes, survives reload, and requires a fresh run for changed material', async () => {
     const { root, service } = await workspace()
     const expertIds = Array.from({ length: 6 }, (_, index) => `expert-${index + 1}`)
     await writeFile(join(root, 'wiki/synthesis/architecture-review-experts.json'), JSON.stringify({
       version: 1, generatedAt: new Date().toISOString(), basis: ['wiki/index.md'], limitations: '人工核实',
-      experts: expertIds.map(id => ({ id, name: id, focus: id, role: '核对', capabilities: ['核对资料'], responsibilities: ['核对证据'],
-        baseline: 'security.md', sources: [{ path: 'raw/sources/standards/security.md', detail: '安全规范' }], boundaries: '不决策' })),
+      experts: expertIds.map((id, index) => ({ id, name: id, focus: id, role: '核对', capabilities: ['核对资料'], responsibilities: ['核对证据'],
+        baseline: index % 2 === 0 ? 'security.md' : 'data.md', sources: [{
+          path: `raw/sources/standards/${index % 2 === 0 ? 'security' : 'data'}.md`, detail: index % 2 === 0 ? '安全规范' : '数据规范',
+        }], boundaries: '不决策' })),
     }))
     const review = await service.createReview({ title: '六专家评审', ruleIds: ['security'], expertIds })
-    expect(review).toMatchObject({ subagentMode: true, basisPaths: ['raw/sources/standards/security.md'] })
+    expect(review).toMatchObject({ subagentMode: true, basisPaths: [
+      'raw/sources/standards/security.md', 'raw/sources/standards/data.md',
+    ] })
     expect((await service.getReview(review.reviewId))?.status).toBe('draft')
-    await service.runReview(review.reviewId)
-    expect((await service.listFindings(review.reviewId))[0]?.title).toBe('缺少评审资料')
     await expect(service.startExpertReview(review.reviewId)).rejects.toThrow(/readable review material/u)
     await service.importArtifact(review.reviewId, { name: 'design.md', content: '# 设计依据' })
-    await expect(service.startExpertReview(review.reviewId)).rejects.toThrow(/review standard is missing/u)
+    await expect(service.startExpertReview(review.reviewId)).rejects.toThrow(/review standards are missing:.*security\.md.*data\.md/u)
     await writeFile(join(root, 'raw/sources/standards/security.md'), '# 安全规范\n')
+    await expect(service.startExpertReview(review.reviewId)).rejects.toThrow(/review standards are missing:.*data\.md/u)
+    await writeFile(join(root, 'raw/sources/standards/data.md'), '# 数据规范\n')
     const run = await service.startExpertReview(review.reviewId)
-    expect(run.standards).toHaveLength(1)
+    expect(run.standards).toHaveLength(2)
     await expect(service.deleteReview(review.reviewId)).rejects.toThrow('expert review is running')
     await expect(service.startExpertReview(review.reviewId)).rejects.toThrow(/running/u)
     await expect(service.importArtifact(review.reviewId, { name: 'during.md', content: '变更' })).rejects.toThrow(/running/u)

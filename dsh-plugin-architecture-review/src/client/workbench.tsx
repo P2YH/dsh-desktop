@@ -11,7 +11,6 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import {
   ARCHITECTURE_REVIEW_ARTIFACTS_PATH,
-  ARCHITECTURE_REVIEW_FINDINGS_PATH,
   ARCHITECTURE_REVIEW_EXPORT_PATH,
   ARCHITECTURE_REVIEW_EXPERTS_PATH,
   ARCHITECTURE_REVIEW_OPERATIONS_PATH,
@@ -23,7 +22,6 @@ import {
   ARCHITECTURE_REVIEW_STANDARDS_PATH,
   type ArchitectureReviewArtifact,
   type ArchitectureReviewArtifactContent,
-  type ArchitectureReviewFinding,
   type ArchitectureReviewExpert,
   type ArchitectureReviewExpertCatalog,
   type ArchitectureReviewRun,
@@ -66,7 +64,6 @@ interface ReviewDetail extends ArchitectureReviewSummary {
   readonly ruleCount?: number
   readonly sources?: readonly ArchitectureReviewArtifact[]
   readonly versions?: readonly string[]
-  readonly findings?: readonly ArchitectureReviewFinding[]
   readonly candidates?: readonly ArchitectureReviewCandidate[]
 }
 
@@ -192,7 +189,7 @@ function ArchitectureReviewWorkbench({ client }: MainProps & { client: ClientCon
     const onCreated = (event: Event) => {
       const { review, task, launchError } = (event as CustomEvent<ReviewCreatedDetail>).detail
       if (task !== undefined) setKnowledgeTask(task)
-      setNotice(`${review.reviewId} 草稿已创建，请在详情页完成资料预检后启动专家评审。`)
+      setNotice(`${review.reviewId} 草稿已创建。资料可读取后即可启动专家评审。`)
       void refresh().then(() => {
         navigate({ view: 'review', reviewId: review.reviewId })
         if (launchError !== undefined) setError(launchError)
@@ -349,10 +346,6 @@ function ReviewDetailPage({ client, reviewId, fallback, activeTask, onClearTask,
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
-  const [severity, setSeverity] = useState('all')
-  const [findingStatus, setFindingStatus] = useState('all')
-  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null)
-  const [reason, setReason] = useState('')
   const [decision, setDecision] = useState<'approved' | 'conditional' | 'changes-requested' | 'rejected'>('conditional')
   const [decisionReason, setDecisionReason] = useState('')
   const [decisionMessage, setDecisionMessage] = useState<string | null>(null)
@@ -371,9 +364,8 @@ function ReviewDetailPage({ client, reviewId, fallback, activeTask, onClearTask,
     setLoading(true)
     try {
       const reviewPath = `${ARCHITECTURE_REVIEW_REVIEW_PREFIX}${encodeURIComponent(reviewId)}`
-      const [summary, findingPayload, artifactPayload, candidatePayload, standardPayload] = await Promise.all([
+      const [summary, artifactPayload, candidatePayload, standardPayload] = await Promise.all([
         requestJson<ArchitectureReviewSummary>(reviewPath, undefined, signal),
-        requestJson<{ findings?: readonly ArchitectureReviewFinding[] }>(`${reviewPath}/findings`, undefined, signal),
         requestJson<{ artifacts?: readonly ArchitectureReviewArtifact[] }>(`${reviewPath}/artifacts`, undefined, signal)
           .catch(cause => cause instanceof RequestError && (cause.status === 404 || cause.status === 405)
             ? { artifacts: [] }
@@ -384,7 +376,6 @@ function ReviewDetailPage({ client, reviewId, fallback, activeTask, onClearTask,
       if (signal?.aborted) return
       const detail: ReviewDetail = {
         ...summary,
-        findings: findingPayload.findings ?? [],
         sources: artifactPayload.artifacts ?? [],
         candidates: candidatePayload.candidates ?? [],
       }
@@ -392,8 +383,6 @@ function ReviewDetailPage({ client, reviewId, fallback, activeTask, onClearTask,
       setStandards(standardPayload.standards ?? [])
       setExpertIds(detail.expertIds)
       setError(null)
-      setSelectedFindingId(current => detail.findings?.some(finding => finding.findingId === current)
-        ? current : detail.findings?.[0]?.findingId ?? null)
     } catch (cause) {
       if (!signal?.aborted && !isAbortError(cause)) setError(messageFor(cause, '无法读取评审详情。'))
     } finally {
@@ -403,7 +392,6 @@ function ReviewDetailPage({ client, reviewId, fallback, activeTask, onClearTask,
 
   useEffect(() => {
     const controller = new AbortController()
-    setSelectedFindingId(null)
     setSelectedSource(null)
     setReportContent(null)
     setShowExpertSelection(false)
@@ -435,11 +423,6 @@ function ReviewDetailPage({ client, reviewId, fallback, activeTask, onClearTask,
     catch (cause) { setActionMessage(messageFor(cause, '保存参与专家失败。')) }
     finally { setActionBusy(false) }
   }
-
-  const findings = (review?.findings ?? []).filter(finding => (severity === 'all' || finding.severity === severity) && (findingStatus === 'all' || finding.status === findingStatus))
-  const selectedFinding = findings.find(finding => finding.findingId === selectedFindingId) ?? findings[0] ?? null
-  const unresolvedBlockers = (review?.findings ?? []).filter(finding => finding.severity === 'Blocker'
-    && !['resolved', 'accepted-risk', 'rejected'].includes(finding.status)).length
 
   const openSource = async (source: ArchitectureReviewArtifact) => {
     setActionMessage(null)
@@ -474,16 +457,17 @@ function ReviewDetailPage({ client, reviewId, fallback, activeTask, onClearTask,
     setActionBusy(true)
     setActionMessage('正在导入资料…')
     try {
-      await uploadSources(reviewId, chosen)
+      const uploaded = await uploadSources(reviewId, chosen)
       const operation = await requestJson<ArchitectureReviewOperation>(`${ARCHITECTURE_REVIEW_REVIEW_PREFIX}${encodeURIComponent(reviewId)}/ingest`, { method: 'POST' })
       rememberOperation(operation)
-      const precheckResult = await requestJson<ArchitectureReviewOperation>(`${ARCHITECTURE_REVIEW_REVIEW_PREFIX}${encodeURIComponent(reviewId)}/run`, { method: 'POST' })
-      rememberOperation(precheckResult)
       await load()
       setDetailTab('materials')
-      setActionMessage(`已导入 ${chosen.length} 份资料并完成预检，请核对可读取状态和缺失项。`)
+      const unreadable = uploaded.filter(source => source.parseStatus !== 'ready')
+      setActionMessage(unreadable.length === 0
+        ? `已添加 ${uploaded.length} 份待评审资料，均可读取。`
+        : `已添加 ${uploaded.length} 份资料；${unreadable.map(source => source.name).join('、')} 无法读取正文，请补充 OCR、Markdown 或 TXT 文本版。`)
     } catch (cause) {
-      setActionMessage(`资料处理失败：${messageFor(cause, '请重试。')} 已保存的文件会显示在资料列表中，请核对后继续预检。`)
+      setActionMessage(`资料提交失败：${messageFor(cause, '请重试。')} 已保存的文件会显示在资料列表中。`)
       await load()
     } finally {
       setActionBusy(false)
@@ -499,7 +483,7 @@ function ReviewDetailPage({ client, reviewId, fallback, activeTask, onClearTask,
     }
     if (review?.run?.status === 'starting' || review?.run?.status === 'reviewing') { setDetailTab('experts'); return }
     if (review?.run !== null && review?.run !== undefined
-      && !window.confirm('重新评审会替换当前预检项和候选问题，已有处理状态与报告可能不再适用。继续吗？')) return
+      && !window.confirm('重新评审会替换当前候选问题，已有处理状态与报告可能不再适用。继续吗？')) return
     setActionBusy(true)
     setActionMessage('正在启动专家评审…')
     try {
@@ -522,20 +506,6 @@ function ReviewDetailPage({ client, reviewId, fallback, activeTask, onClearTask,
     } finally {
       setActionBusy(false)
     }
-  }
-
-  const precheck = async () => {
-    setActionBusy(true)
-    try {
-      const ingestion = await requestJson<ArchitectureReviewOperation>(`${ARCHITECTURE_REVIEW_REVIEW_PREFIX}${encodeURIComponent(reviewId)}/ingest`, { method: 'POST' })
-      rememberOperation(ingestion)
-      const operation = await requestJson<ArchitectureReviewOperation>(`${ARCHITECTURE_REVIEW_REVIEW_PREFIX}${encodeURIComponent(reviewId)}/run`, { method: 'POST' })
-      rememberOperation(operation)
-      await load()
-      setDetailTab('materials')
-      setActionMessage(`资料预检完成：${String(operation.result.findingCount ?? 0)} 项缺失或限制。`)
-    } catch (cause) { setActionMessage(messageFor(cause, '资料预检失败。')) }
-    finally { setActionBusy(false) }
   }
 
   const retryExpert = async (expertId: string) => {
@@ -581,34 +551,7 @@ function ReviewDetailPage({ client, reviewId, fallback, activeTask, onClearTask,
     }
   }
 
-  const updateFinding = async (status: string) => {
-    if (selectedFinding === null) return
-    if ((status === 'rejected' || status === 'accepted-risk') && reason.trim().length === 0) {
-      setActionMessage('请先填写处理理由。')
-      return
-    }
-    setActionBusy(true)
-    try {
-      const updated = await requestJson<ArchitectureReviewFinding>(`${ARCHITECTURE_REVIEW_FINDINGS_PATH}/${encodeURIComponent(selectedFinding.findingId)}`, {
-        method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status, reason: reason.trim() }),
-      })
-      setReview(current => current === null || current.findings === undefined
-        ? current
-        : { ...current, findings: current.findings.map(item => item.findingId === updated.findingId ? updated : item) })
-      setReason('')
-      setActionMessage(`问题已标记为${reviewStatusLabel(status)}。`)
-    } catch (cause) {
-      setActionMessage(messageFor(cause, '更新 Finding 失败。'))
-    } finally {
-      setActionBusy(false)
-    }
-  }
-
   const createDecision = async () => {
-    if (unresolvedBlockers > 0) {
-      setDecisionMessage(`还有 ${unresolvedBlockers} 条阻断问题未处理，无法生成决策。`)
-      return
-    }
     if ((decision === 'rejected' || decision === 'changes-requested') && decisionReason.trim().length === 0) {
       setDecisionMessage('退回或拒绝评审时必须填写理由。')
       return
@@ -674,19 +617,17 @@ function ReviewDetailPage({ client, reviewId, fallback, activeTask, onClearTask,
     || JSON.stringify(review?.expertIds ?? []) !== JSON.stringify(run.experts.map(item => item.expertId))
     || run.standards.some(item => standards.find(standard => standard.path === item.path)?.sha256 !== item.sha256))
   const hasReadableSource = review?.sources?.some(source => source.parseStatus === 'ready') ?? false
-  const missingBasisPaths = review?.basisPaths.filter(path => !standards.some(item => item.path === path)) ?? []
-  const hasBasis = (review?.basisPaths.length ?? 0) > 0 && missingBasisPaths.length === 0
-  const ready = hasReadableSource && expertIds.length > 0 && hasBasis
+  const unreadableSources = review?.sources?.filter(source => source.parseStatus !== 'ready') ?? []
+  const ready = hasReadableSource && expertIds.length > 0
   const pendingCandidates = review?.candidates?.filter(item => item.status === 'proposed' || item.status === 'needs-evidence').length ?? 0
   const failedExperts = run?.experts.filter(expert => expert.status === 'failed').length ?? 0
-  const stages = ['资料准备', '本地预检', '专家评审', '人工确认', '决策'] as const
-  const stageIndex = sourcesChanged ? 0 : review?.status === 'completed' ? 4 : run?.status === 'human-review' ? 3 : runActive ? 2 : review?.status === 'prechecked' ? 1 : 0
-  const primaryLabel = runActive ? '查看进度' : !hasReadableSource ? '补充评审资料' : expertIds.length === 0 ? '选择评审专家' : !hasBasis ? '完善专家依据' : sourcesChanged ? '重新评审' : run?.status === 'human-review' ? pendingCandidates > 0 ? '处理未决意见' : '查看决策' : run === null || run === undefined ? '开始专家评审' : '重新评审'
+  const stages = ['资料准备', '专家评审', '人工确认', '决策'] as const
+  const stageIndex = sourcesChanged ? 0 : review?.status === 'completed' ? 3 : run?.status === 'human-review' ? 2 : runActive ? 1 : 0
+  const primaryLabel = runActive ? '查看进度' : !hasReadableSource ? '补充评审资料' : expertIds.length === 0 ? '选择评审专家' : sourcesChanged ? '重新评审' : run?.status === 'human-review' ? pendingCandidates > 0 ? '处理未决意见' : '查看决策' : run === null || run === undefined ? '开始专家评审' : '重新评审'
   const primaryAction = () => {
     if (runActive) setDetailTab('experts')
     else if (!hasReadableSource) { setDetailTab('materials'); setActionMessage((review?.sources?.length ?? 0) > 0 ? '已保存的资料尚无可读取正文。扫描版 PDF、DOCX 或图片请补充可读取的文本版。' : '请添加至少一份可读取的待评审资料。'); importInput.current?.click() }
     else if (expertIds.length === 0) { setDetailTab('experts'); setActionMessage('请选择参与评审的专家。') }
-    else if (!hasBasis) { setDetailTab('experts'); setActionMessage('所选专家引用的规范原件不齐全，请在知识库补齐文件或更新专家目录。') }
     else if (run?.status === 'human-review' && !sourcesChanged) setDetailTab(pendingCandidates > 0 ? 'candidates' : 'decision')
     else void startReview()
   }
@@ -694,7 +635,7 @@ function ReviewDetailPage({ client, reviewId, fallback, activeTask, onClearTask,
   return (
     <main className="dshArchitectureReviewPage">
       <button type="button" className="backButton" onClick={onBack}>← 返回评审项目</button>
-      <PageHeader title={review?.title ?? reviewId} description={`${reviewId}${review === null ? '' : ` · ${review.version} · ${sourcesChanged ? '待重新评审' : reviewStatusLabel(review.status)}`}`} actions={<><input ref={importInput} type="file" hidden multiple accept=".pdf,.docx,.md,.markdown,.txt,.json,.yaml,.yml,.openapi,.png,.jpg,.jpeg,.webp" onChange={event => void importSources(event.currentTarget.files)} /><button type="button" className="secondary" onClick={() => importInput.current?.click()} disabled={review === null || actionBusy || runActive}>添加待评审资料</button>{(run === null || run === undefined || sourcesChanged) && <button type="button" className="secondary" onClick={() => void precheck()} disabled={review === null || actionBusy || runActive}>资料预检</button>}<button type="button" className="primary" onClick={primaryAction} disabled={review === null || actionBusy}>{actionBusy ? '处理中…' : primaryLabel}</button></>} />
+      <PageHeader title={review?.title ?? reviewId} description={`${reviewId}${review === null ? '' : ` · ${review.version} · ${sourcesChanged ? '待重新评审' : reviewStatusLabel(review.status)}`}`} actions={<><input ref={importInput} type="file" hidden multiple accept=".pdf,.docx,.md,.markdown,.txt,.json,.yaml,.yml,.openapi,.png,.jpg,.jpeg,.webp" onChange={event => void importSources(event.currentTarget.files)} /><button type="button" className="secondary" onClick={() => importInput.current?.click()} disabled={review === null || actionBusy || runActive}>添加待评审资料</button><button type="button" className="primary" onClick={primaryAction} disabled={review === null || actionBusy}>{actionBusy ? '处理中…' : primaryLabel}</button></>} />
       {error !== null && <Banner kind="error" message={error} actionLabel="重试" onAction={() => void load()} />}
       {actionMessage !== null && <Banner kind={actionMessage.includes('失败') || actionMessage.includes('无法') || actionMessage.includes('请先') || actionMessage.includes('不支持') || actionMessage.includes('已存在') ? 'error' : 'success'} message={actionMessage} actionLabel="关闭" onAction={() => setActionMessage(null)} />}
       <ol className="dshArchitectureReviewStages" aria-label="评审阶段">{stages.map((stage, index) => <li key={stage} aria-current={index === stageIndex ? 'step' : undefined} className={index === stageIndex ? 'current' : index < stageIndex ? 'done' : ''}><span>{index + 1}</span>{stage}</li>)}</ol>
@@ -706,7 +647,7 @@ function ReviewDetailPage({ client, reviewId, fallback, activeTask, onClearTask,
         <div className="dshArchitectureReviewPanelHeader"><h2>{run ? '本次参与专家' : '参与评审的专家智能体'}</h2><div className="dshArchitectureReviewHeaderActions">{!runActive && (run === null || run === undefined || showExpertSelection) && <button type="button" className="secondary" disabled={actionBusy || review === null || expertIds.length === 0} onClick={() => void saveExpertSelection()}>保存选择</button>}{run && !runActive && <button type="button" className="secondary" onClick={() => setShowExpertSelection(value => !value)}>{showExpertSelection ? '收起配置' : '调整下次评审专家'}</button>}</div></div>
         {run && <p>{run.experts.map(expert => expert.name).join('、')} · {run.experts.filter(expert => expert.status === 'completed').length}/{run.experts.length} 已完成</p>}
         {!runActive && (run === null || run === undefined || showExpertSelection) && <ExpertChoices catalog={catalog} selected={expertIds} onToggle={id => setExpertIds(current => current.includes(id) ? current.filter(value => value !== id) : [...current, id])} />}
-        {review !== null && review.expertIds.length > 0 && <p>已选专家引用 {review.basisPaths.length} 份规范原件。{!hasBasis && (missingBasisPaths.length > 0 ? `缺失：${missingBasisPaths.join('、')}` : '专家目录尚未引用规范原件。')}</p>}
+        {review !== null && review.expertIds.length > 0 && <p>已选专家引用 {review.basisPaths.length} 份规范原件，启动评审时会统一核对。</p>}
         {expertError !== null && <p role="alert">{expertError}</p>}
       </section>
       {run !== undefined && run !== null && <section className="dshArchitectureReviewExpertTasks"><div className="dshArchitectureReviewPanelHeader"><h2>专家任务 · {run.experts.filter(item => item.status === 'completed').length}/{run.experts.length} 已完成</h2>{!runActive && <button type="button" className="secondary" disabled={actionBusy || !ready} onClick={() => void startReview()}>重新评审{sourcesChanged ? '更新后资料' : '同一资料'}</button>}</div><p>运行 ID：{run.runId} · 资料 {run.sourceVersion} · 评审依据 {run.standards.length} 份</p>{run.experts.map(expert => <article key={expert.expertId}><div><strong>{expert.name}</strong><Status status={expert.status} />{expert.status === 'failed' && run.status === 'human-review' && <button type="button" className="secondary" disabled={actionBusy} onClick={() => void retryExpert(expert.expertId)}>重试该专家</button>}</div>{expert.error && <p role="alert">{expert.error}</p>}{expert.conclusion && <details><summary>查看原始结论与证据</summary><pre>{expert.conclusion}</pre></details>}</article>)}</section>}
@@ -721,14 +662,17 @@ function ReviewDetailPage({ client, reviewId, fallback, activeTask, onClearTask,
           {(review?.sources?.length ?? 0) === 0 ? <p>尚未添加待评审资料</p> : review?.sources?.map(source => <button type="button" className={`dshArchitectureReviewTreeItem${selectedSource?.path === source.path ? ' active' : ''}`} key={source.path} title={source.path} onClick={() => void openSource(source)}><span aria-hidden>▧</span><span><strong>{source.name}</strong><small>{source.parseStatus === 'ready' ? source.name.toLowerCase().endsWith('.pdf') ? '已提取文字，图表需核对原件' : '可读取' : source.name.toLowerCase().endsWith('.pdf') ? '未提取到文字，需 OCR 或文本版' : '仅保存，需补充文本版'}</small></span></button>)}
         </aside>
         <section className="dshArchitectureReviewDetailColumn">
-          <h2>资料预检清单</h2>
-          <div className="dshArchitectureReviewDetailSummary"><span><strong>{review?.sources?.length ?? 0}</strong><small>资料</small></span><span><strong>{review?.expertIds.length ?? 0}</strong><small>参与专家</small></span><span><strong>{review?.findings?.length ?? 0}</strong><small>预检项</small></span></div>
-          <div className="dshArchitectureReviewFilters"><select aria-label="严重度" value={severity} onChange={event => setSeverity(event.currentTarget.value)}><option value="all">全部严重度</option><option value="Blocker">阻断</option><option value="Major">重要</option></select><select aria-label="状态" value={findingStatus} onChange={event => setFindingStatus(event.currentTarget.value)}><option value="all">全部状态</option><option value="proposed">待确认</option><option value="confirmed">已确认</option><option value="in-progress">处理中</option><option value="resolved">已解决</option><option value="accepted-risk">已接受风险</option><option value="rejected">已驳回</option></select></div>
-          {findings.length === 0 ? <EmptyState compact icon="✓" title={review?.findings?.length ? '没有匹配的问题' : review?.status === 'draft' ? '尚未运行资料预检' : '形式预检未发现缺项'} description={review?.findings?.length ? '调整筛选条件以查看其他问题。' : review?.status === 'draft' ? '添加待评审资料后运行资料预检。' : '资料可读取不等于内容充分；适用性和证据仍需专家核对。'} /> : findings.map(finding => <button type="button" className={`dshArchitectureReviewRow${selectedSource === null && selectedFinding?.findingId === finding.findingId ? ' selected' : ''}`} aria-pressed={selectedSource === null && selectedFinding?.findingId === finding.findingId} key={finding.findingId} onClick={() => { setSelectedSource(null); setSelectedFindingId(finding.findingId); setReason('') }}><span className="dshArchitectureReviewRowTitle"><strong>{finding.title}</strong><small>{finding.dimension === 'rules' ? '规范' : '完整性'} · {reviewStatusLabel(finding.status)}</small></span><Status status={finding.severity} /><span className="dshArchitectureReviewRowArrow">›</span></button>)}
+          <h2>资料提交状态</h2>
+          <div className="dshArchitectureReviewDetailSummary"><span><strong>{review?.sources?.length ?? 0}</strong><small>已提交</small></span><span><strong>{review?.sources?.filter(source => source.parseStatus === 'ready').length ?? 0}</strong><small>可读取</small></span><span><strong>{unreadableSources.length}</strong><small>需补文本</small></span></div>
+          {(review?.sources?.length ?? 0) === 0
+            ? <EmptyState compact icon="▧" title="尚未提交资料" description="添加架构说明、接口定义、数据模型或部署资料后即可开始评审。" />
+            : unreadableSources.length === 0
+              ? <EmptyState compact icon="✓" title="资料均可读取" description="启动专家评审时会核对专家引用的规范原件。" />
+              : <div className="dshArchitectureReviewNotice"><strong>以下原件无法读取正文</strong><p>{unreadableSources.map(source => source.name).join('、')}</p><span>原件已保存，请补充 OCR、Markdown 或 TXT 文本版。</span></div>}
         </section>
         <aside className="dshArchitectureReviewDetailColumn">
-          <h2>{selectedSource === null ? '证据与处理' : '原始资料'}</h2>
-          {selectedSource !== null ? <ArtifactPreview artifact={selectedSource} /> : selectedFinding === null ? <div className="dshArchitectureReviewEvidence"><span className="dshArchitectureReviewEvidenceIcon" aria-hidden>◎</span><strong>选择一条问题或资料</strong><span>详情会显示在这里。</span></div> : <FindingEvidencePanel finding={selectedFinding} reason={reason} busy={actionBusy} onReasonChange={setReason} onUpdate={status => void updateFinding(status)} />}
+          <h2>原始资料</h2>
+          {selectedSource !== null ? <ArtifactPreview artifact={selectedSource} /> : <div className="dshArchitectureReviewEvidence"><span className="dshArchitectureReviewEvidenceIcon" aria-hidden>◎</span><strong>选择一份资料</strong><span>文件信息和可读取内容会显示在这里。</span></div>}
         </aside>
       </div>
       <div className="dshArchitectureReviewHeaderActions"><button type="button" className="secondary" onClick={() => void verifySources()} disabled={review === null || actionBusy}>资料核对</button><button type="button" className="secondary" onClick={() => void runLint()} disabled={review === null || actionBusy}>运行 Wiki Lint</button></div>
@@ -737,7 +681,7 @@ function ReviewDetailPage({ client, reviewId, fallback, activeTask, onClearTask,
       {detailTab === 'decision' &&
       <section className="dshArchitectureReviewPanel dshArchitectureReviewDecisionPanel">
         <div className="dshArchitectureReviewPanelHeader"><h2>决策与报告</h2><div className="dshArchitectureReviewHeaderActions"><button type="button" className="secondary" onClick={() => void openReport()} disabled={review?.status !== 'completed'}>{reportContent === null ? '查看报告' : '收起报告'}</button><button type="button" className="secondary" onClick={() => void exportReport()} disabled={review?.status !== 'completed' || actionBusy}>⇩ 导出 Markdown</button></div></div>
-        <div className="dshArchitectureReviewPanelBody"><div className="dshArchitectureReviewFormGrid"><div className="dshArchitectureReviewField"><label htmlFor="architecture-review-decision">评审结果</label><select id="architecture-review-decision" value={decision} onChange={event => setDecision(event.currentTarget.value as typeof decision)}><option value="approved">通过</option><option value="conditional">有条件通过</option><option value="changes-requested">退回修改</option><option value="rejected">拒绝</option></select></div><div className="dshArchitectureReviewField"><label htmlFor="architecture-review-decision-reason">决策说明</label><textarea id="architecture-review-decision-reason" value={decisionReason} onChange={event => setDecisionReason(event.currentTarget.value)} placeholder="记录风险接受、未完成专家和后续行动" /></div></div>{run?.status !== 'human-review' && <p className="dshArchitectureReviewDecisionWarning">请等待所有专家任务结束，再进行人工确认。</p>}{sourcesChanged && <p className="dshArchitectureReviewDecisionWarning">资料或评审依据已变化，请重新评审后再决策。</p>}{failedExperts > 0 && <p className="dshArchitectureReviewDecisionWarning">{failedExperts} 位专家未完成，继续决策必须说明理由，且不能无保留通过。</p>}{pendingCandidates > 0 && <p className="dshArchitectureReviewDecisionWarning">还有 {pendingCandidates} 条专家意见未作最终判断（含待补充证据），请先处理。</p>}{unresolvedBlockers > 0 && <p className="dshArchitectureReviewDecisionWarning">还有 {unresolvedBlockers} 条阻断缺失项未处理。</p>}<div className="dshArchitectureReviewHeaderActions"><button type="button" className="primary" onClick={() => void createDecision()} disabled={run?.status !== 'human-review' || actionBusy || sourcesChanged || unresolvedBlockers > 0 || pendingCandidates > 0}>生成决策与报告</button>{decisionMessage !== null && <span role="status">{decisionMessage}</span>}</div>{reportContent !== null && <pre className="dshArchitectureReviewReport">{reportContent}</pre>}</div>
+        <div className="dshArchitectureReviewPanelBody"><div className="dshArchitectureReviewFormGrid"><div className="dshArchitectureReviewField"><label htmlFor="architecture-review-decision">评审结果</label><select id="architecture-review-decision" value={decision} onChange={event => setDecision(event.currentTarget.value as typeof decision)}><option value="approved">通过</option><option value="conditional">有条件通过</option><option value="changes-requested">退回修改</option><option value="rejected">拒绝</option></select></div><div className="dshArchitectureReviewField"><label htmlFor="architecture-review-decision-reason">决策说明</label><textarea id="architecture-review-decision-reason" value={decisionReason} onChange={event => setDecisionReason(event.currentTarget.value)} placeholder="记录风险接受、未完成专家和后续行动" /></div></div>{run?.status !== 'human-review' && <p className="dshArchitectureReviewDecisionWarning">请等待所有专家任务结束，再进行人工确认。</p>}{sourcesChanged && <p className="dshArchitectureReviewDecisionWarning">资料或评审依据已变化，请重新评审后再决策。</p>}{failedExperts > 0 && <p className="dshArchitectureReviewDecisionWarning">{failedExperts} 位专家未完成，继续决策必须说明理由，且不能无保留通过。</p>}{pendingCandidates > 0 && <p className="dshArchitectureReviewDecisionWarning">还有 {pendingCandidates} 条专家意见未作最终判断（含待补充证据），请先处理。</p>}<div className="dshArchitectureReviewHeaderActions"><button type="button" className="primary" onClick={() => void createDecision()} disabled={run?.status !== 'human-review' || actionBusy || sourcesChanged || pendingCandidates > 0}>生成决策与报告</button>{decisionMessage !== null && <span role="status">{decisionMessage}</span>}</div>{reportContent !== null && <pre className="dshArchitectureReviewReport">{reportContent}</pre>}</div>
       </section>
       }
     </main>
@@ -813,12 +757,6 @@ function CandidateCard({ candidate, busy, onUpdate }: {
     <div className="dshArchitectureReviewHeaderActions">{actions.map(action => <button type="button" key={action.status} className="secondary" title={action.title} disabled={busy || !reason.trim() || (action.status === 'confirmed' && candidate.evidence.length === 0)} onClick={async () => { if (await onUpdate(action.status, reason)) setReason('') }}>{action.label}</button>)}</div>
     {candidate.evidence.length === 0 && <small className="dshArchitectureReviewCandidateHint">没有可核实证据，暂不能认定问题成立。</small>}
   </article>
-}
-
-function FindingEvidencePanel({ finding, reason, busy, onReasonChange, onUpdate }: { finding: ArchitectureReviewFinding; reason: string; busy: boolean; onReasonChange: (value: string) => void; onUpdate: (status: string) => void }) {
-  const hasEvidence = finding.evidence.length > 0
-  const open = !['resolved', 'rejected', 'accepted-risk'].includes(finding.status)
-  return <div className="dshArchitectureReviewEvidence"><Status status={finding.severity} /><strong>{finding.title}</strong><p><strong>问题：</strong>{finding.problem}</p><p><strong>建议：</strong>{finding.recommendation}</p><p><strong>置信度：</strong>{reviewStatusLabel(finding.confidence)}</p><h3>证据</h3>{!hasEvidence ? <div className="dshArchitectureReviewNotice">当前没有可回溯证据，无法确认或标记已解决。可补充资料重新评审，或说明理由后驳回／接受风险。</div> : finding.evidence.map((evidence, index) => <div key={`${evidence}-${index}`}><strong>[E{index + 1}]</strong><p>{evidence}</p></div>)}{finding.reason && <p><strong>处理记录：</strong>{finding.reason}</p>}{open && <div className="dshArchitectureReviewField"><span>处理理由</span><textarea value={reason} onChange={event => onReasonChange(event.currentTarget.value)} placeholder="驳回或接受风险时必须说明理由" /></div>}<div className="dshArchitectureReviewHeaderActions">{open && <><button type="button" className="secondary" disabled={busy} onClick={() => onUpdate('rejected')}>驳回</button><button type="button" className="secondary" disabled={busy} onClick={() => onUpdate('accepted-risk')}>接受风险</button></>}{finding.status === 'proposed' && <button type="button" className="primary" disabled={busy || !hasEvidence} onClick={() => onUpdate('confirmed')}>确认问题</button>}{finding.status === 'confirmed' && <button type="button" className="primary" disabled={busy} onClick={() => onUpdate('in-progress')}>开始处理</button>}{finding.status === 'in-progress' && <button type="button" className="primary" disabled={busy} onClick={() => onUpdate('resolved')}>标记已解决</button>}{!open && <button type="button" className="secondary" disabled={busy} onClick={() => onUpdate('proposed')}>重新评估</button>}</div></div>
 }
 
 function KnowledgePage({ client, workspace, activeTask, onClearTask, onOpenReview, onInitialize, onKnowledgeTask }: {
@@ -1081,9 +1019,9 @@ function OperationsPage({ workspace, onInitialize, onOpen }: { workspace: Archit
     const timer = window.setInterval(() => void load(controller.signal), 5_000)
     return () => { controller.abort(); window.clearInterval(timer) }
   }, [workspace?.initialized])
-  const operationLabels: Record<ArchitectureReviewOperation['type'], string> = { ingest: '资料摄入', review: '本地评审', lint: 'Wiki Lint' }
-  if (workspace?.initialized !== true) return <main className="dshArchitectureReviewPage"><PageHeader title="运行记录" description="查看本地资料摄入、评审和 Lint 的结果。" /><div className="dshArchitectureReviewPanel"><EmptyState icon="⌂" title="工作区尚未初始化" description="选择本地工作区后即可查看运行记录。" actionLabel="初始化工作区" onAction={onInitialize} /></div></main>
-  return <main className="dshArchitectureReviewPage"><PageHeader title="运行记录" description="查看本地资料摄入、评审和 Lint 的结果。" actions={<button type="button" className="secondary" onClick={() => void load()}>↻ 刷新</button>} />{error !== null && <Banner kind="error" message={error} actionLabel="关闭" onAction={() => setError(null)} />}{operations.length === 0 ? <div className="dshArchitectureReviewPanel"><EmptyState icon="◷" title="暂无运行记录" description="从评审详情启动任务后，结果会显示在这里。" /></div> : <div className="dshArchitectureReviewReviewList">{operations.map(operation => <button type="button" className="dshArchitectureReviewReviewCard" key={operation.operationId} disabled={operation.reviewId === null} onClick={() => { if (operation.reviewId !== null) onOpen(operation.reviewId) }}><div><h2>{operationLabels[operation.type]}</h2><p>{operation.reviewId ?? '工作区任务'} · {formatDate(operation.startedAt)}</p></div><Status status={operation.status} /><div className="dshArchitectureReviewReviewMeta"><div>{operation.status === 'failed' ? '打开评审重试' : operation.type === 'review' ? `${String(operation.result.findingCount ?? 0)} 条候选问题` : operation.type === 'lint' ? `${String(operation.result.issueCount ?? 0)} 个断链` : `${String(operation.result.artifactCount ?? 0)} 份资料`}</div></div></button>)}</div>}</main>
+  const operationLabels: Record<ArchitectureReviewOperation['type'], string> = { ingest: '资料提交', review: '历史资料检查', lint: 'Wiki Lint' }
+  if (workspace?.initialized !== true) return <main className="dshArchitectureReviewPage"><PageHeader title="运行记录" description="查看资料提交、评审和 Wiki Lint 的结果。" /><div className="dshArchitectureReviewPanel"><EmptyState icon="⌂" title="工作区尚未初始化" description="选择本地工作区后即可查看运行记录。" actionLabel="初始化工作区" onAction={onInitialize} /></div></main>
+  return <main className="dshArchitectureReviewPage"><PageHeader title="运行记录" description="查看资料提交、评审和 Wiki Lint 的结果。" actions={<button type="button" className="secondary" onClick={() => void load()}>↻ 刷新</button>} />{error !== null && <Banner kind="error" message={error} actionLabel="关闭" onAction={() => setError(null)} />}{operations.length === 0 ? <div className="dshArchitectureReviewPanel"><EmptyState icon="◷" title="暂无运行记录" description="从评审详情启动任务后，结果会显示在这里。" /></div> : <div className="dshArchitectureReviewReviewList">{operations.map(operation => <button type="button" className="dshArchitectureReviewReviewCard" key={operation.operationId} disabled={operation.reviewId === null} onClick={() => { if (operation.reviewId !== null) onOpen(operation.reviewId) }}><div><h2>{operationLabels[operation.type]}</h2><p>{operation.reviewId ?? '工作区任务'} · {formatDate(operation.startedAt)}</p></div><Status status={operation.status} /><div className="dshArchitectureReviewReviewMeta"><div>{operation.status === 'failed' ? '打开评审重试' : operation.type === 'review' ? `${String(operation.result.findingCount ?? 0)} 条历史检查项` : operation.type === 'lint' ? `${String(operation.result.issueCount ?? 0)} 个断链` : `${String(operation.result.artifactCount ?? 0)} 份资料`}</div></div></button>)}</div>}</main>
 }
 
 function SettingsPage({ workspace, onPickDirectory, onInitialized }: { workspace: ArchitectureReviewWorkspaceSnapshot | null; onPickDirectory: () => Promise<string | null>; onInitialized: () => Promise<void> }) {
@@ -1198,6 +1136,7 @@ function CreateReviewWizard({ onClose }: { onClose: () => void }) {
     setSubmitting(true); setSubmitError(null)
     let phase = '创建评审'
     let reviewCreated = created !== null
+    let unreadableNames: readonly string[] = []
     try {
       const review = created ?? await requestJson<ArchitectureReviewSummary>(ARCHITECTURE_REVIEW_REVIEWS_PATH, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...input, expertIds }),
@@ -1207,14 +1146,18 @@ function CreateReviewWizard({ onClose }: { onClose: () => void }) {
       const pendingSources = sources.filter(source => !uploadedKeys.has(source.key))
       if (pendingSources.length > 0) {
         phase = '导入资料'
-        await uploadSources(review.reviewId, pendingSources.map(source => source.file), file => setUploadedKeys(current => new Set(current).add(fileKey(file))))
+        const uploaded = await uploadSources(review.reviewId, pendingSources.map(source => source.file), file => setUploadedKeys(current => new Set(current).add(fileKey(file))))
+        unreadableNames = uploaded.filter(source => source.parseStatus !== 'ready').map(source => source.name)
       }
       if (sources.length > 0) {
         phase = '摄入资料'
         const operation = await requestJson<ArchitectureReviewOperation>(`${ARCHITECTURE_REVIEW_REVIEW_PREFIX}${encodeURIComponent(review.reviewId)}/ingest`, { method: 'POST' })
         rememberOperation(operation)
       }
-      window.dispatchEvent(new CustomEvent(REVIEW_CREATED_EVENT, { detail: { review } satisfies ReviewCreatedDetail }))
+      window.dispatchEvent(new CustomEvent(REVIEW_CREATED_EVENT, { detail: {
+        review,
+        ...(unreadableNames.length === 0 ? {} : { launchError: `${unreadableNames.join('、')} 无法读取正文，请补充 OCR、Markdown 或 TXT 文本版。` }),
+      } satisfies ReviewCreatedDetail }))
       onClose()
     } catch (cause) {
       setSubmitError(!reviewCreated ? messageFor(cause, '创建评审失败，请重试。') : `${phase}失败：${messageFor(cause, '请重试或先打开评审。')}`)
@@ -1236,7 +1179,7 @@ function BasicsStep({ input, errors, onChange }: { input: ReviewBasics; errors: 
 }
 
 function SourcesStep({ sources, onAdd, onRemove }: { sources: readonly DraftSource[]; onAdd: (files: readonly File[]) => void; onRemove: (key: string) => void }) {
-  return <><label className="dshArchitectureReviewDropzone" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); onAdd(Array.from(event.dataTransfer.files)) }}><input type="file" multiple accept=".pdf,.docx,.md,.markdown,.txt,.json,.yaml,.yml,.openapi,.png,.jpg,.jpeg,.webp" onChange={event => onAdd(Array.from(event.currentTarget.files ?? []))} /><span aria-hidden>⇧</span><strong>添加待评审资料</strong><small>PDF、DOCX、Markdown、TXT、OpenAPI 和架构图片；单文件不超过 5 MB</small></label>{sources.length === 0 ? <EmptyState compact icon="▧" title="尚未添加待评审资料" description="可先创建草稿，再从详情页补充资料并运行资料预检。" /> : <div className="dshArchitectureReviewSourceList">{sources.map(source => <div className="dshArchitectureReviewSource" key={source.key}><span><strong>{source.file.name}</strong><small>{sourceKind(source.file.name)} · {formatFileSize(source.file.size)}</small></span><code>{source.status === 'hashing' ? '计算 SHA-256…' : source.status === 'error' ? '摘要失败' : source.digest?.slice(0, 12)}</code><button type="button" aria-label={`移除 ${source.file.name}`} onClick={() => onRemove(source.key)}>×</button></div>)}</div>}</>
+  return <><label className="dshArchitectureReviewDropzone" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); onAdd(Array.from(event.dataTransfer.files)) }}><input type="file" multiple accept=".pdf,.docx,.md,.markdown,.txt,.json,.yaml,.yml,.openapi,.png,.jpg,.jpeg,.webp" onChange={event => onAdd(Array.from(event.currentTarget.files ?? []))} /><span aria-hidden>⇧</span><strong>添加待评审资料</strong><small>PDF、DOCX、Markdown、TXT、OpenAPI 和架构图片；单文件不超过 5 MB</small></label>{sources.length === 0 ? <EmptyState compact icon="▧" title="尚未添加待评审资料" description="可先创建草稿，再从详情页补充资料。" /> : <div className="dshArchitectureReviewSourceList">{sources.map(source => <div className="dshArchitectureReviewSource" key={source.key}><span><strong>{source.file.name}</strong><small>{sourceKind(source.file.name)} · {formatFileSize(source.file.size)}</small></span><code>{source.status === 'hashing' ? '计算 SHA-256…' : source.status === 'error' ? '摘要失败' : source.digest?.slice(0, 12)}</code><button type="button" aria-label={`移除 ${source.file.name}`} onClick={() => onRemove(source.key)}>×</button></div>)}</div>}</>
 }
 
 function ExpertChoices({ catalog, selected, onToggle }: {
@@ -1251,7 +1194,7 @@ function ExpertChoices({ catalog, selected, onToggle }: {
 }
 
 function SummaryStep({ input, sources, experts, confirmed, onConfirmed }: { input: ReviewBasics; sources: readonly DraftSource[]; experts: readonly ArchitectureReviewExpert[]; confirmed: boolean; onConfirmed: (value: boolean) => void }) {
-  return <><dl className="dshArchitectureReviewSummary"><dt>评审名称</dt><dd>{input.title}</dd><dt>系统</dt><dd>{input.systemName}</dd><dt>类型</dt><dd>{REVIEW_TYPES.find(([id]) => id === input.type)?.[1] ?? input.type}</dd><dt>负责人</dt><dd>{input.owner}</dd><dt>待评审资料</dt><dd>{sources.length} 份{sources.length > 0 ? `，共 ${formatFileSize(sources.reduce((sum, source) => sum + source.file.size, 0))}` : ''}</dd><dt>拟参与专家</dt><dd>{experts.map(expert => expert.name).join('、')}</dd><dt>输出目录</dt><dd>wiki/reviews/AR-xxx/</dd></dl><div className="dshArchitectureReviewNotice">创建后保持草稿状态。资料预检和专家评审可分别从项目详情启动。</div>{sources.length > 0 && <label className="dshArchitectureReviewConfirm"><input type="checkbox" checked={confirmed} onChange={event => onConfirmed(event.currentTarget.checked)} /><span><strong>我已检查待导入资料中的敏感信息</strong><br />原始资料只保存在所选本地工作区。</span></label>}</>
+  return <><dl className="dshArchitectureReviewSummary"><dt>评审名称</dt><dd>{input.title}</dd><dt>系统</dt><dd>{input.systemName}</dd><dt>类型</dt><dd>{REVIEW_TYPES.find(([id]) => id === input.type)?.[1] ?? input.type}</dd><dt>负责人</dt><dd>{input.owner}</dd><dt>待评审资料</dt><dd>{sources.length} 份{sources.length > 0 ? `，共 ${formatFileSize(sources.reduce((sum, source) => sum + source.file.size, 0))}` : ''}</dd><dt>拟参与专家</dt><dd>{experts.map(expert => expert.name).join('、')}</dd><dt>输出目录</dt><dd>wiki/reviews/AR-xxx/</dd></dl><div className="dshArchitectureReviewNotice">创建后保持草稿状态。提交资料时会检查正文是否可读取，启动评审时会核对专家引用的规范原件。</div>{sources.length > 0 && <label className="dshArchitectureReviewConfirm"><input type="checkbox" checked={confirmed} onChange={event => onConfirmed(event.currentTarget.checked)} /><span><strong>我已检查待导入资料中的敏感信息</strong><br />原始资料只保存在所选本地工作区。</span></label>}</>
 }
 
 function Field({ id, label, error, children }: { id: string; label: string; error?: string | undefined; children: ReactNode }) {
@@ -1293,6 +1236,9 @@ function isAbortError(cause: unknown): boolean {
 
 function messageFor(cause: unknown, fallback: string): string {
   if (!(cause instanceof RequestError)) return fallback
+  if (cause.message.startsWith('review standards are missing: ')) {
+    return `无法启动评审，缺少专家引用的规范原件：${cause.message.slice('review standards are missing: '.length)}`
+  }
   const labels: Record<string, string> = {
     'review not found': '评审不存在，请返回项目列表。',
     'artifact not found': '资料不存在，请刷新后重试。',
@@ -1302,7 +1248,9 @@ function messageFor(cause: unknown, fallback: string): string {
     'a reason is required for this finding status': '请填写处理理由。',
     'a reason is required for a rejected or changes-requested decision': '请填写决策说明。',
     'unconfirmed Blocker findings must be resolved before a decision': '请先处理阻断问题。',
-    'run the review before creating a decision': '请先运行本地评审。',
+    'run the review before creating a decision': '请先完成专家评审。',
+    'readable review material is required': '待评审资料没有可读取正文，请在资料提交环节补充 OCR、Markdown 或 TXT 文本版。',
+    'selected experts must reference review standards': '所选专家没有引用规范原件，请先更新专家目录。',
   }
   return labels[cause.message] ?? (cause.status >= 500 ? fallback : cause.message)
 }
@@ -1321,7 +1269,8 @@ async function requestJson<T = unknown>(path: string, init?: RequestInit, signal
   return payload as T
 }
 
-async function uploadSources(reviewId: string, files: readonly File[], onUploaded?: (file: File) => void): Promise<void> {
+async function uploadSources(reviewId: string, files: readonly File[], onUploaded?: (file: File) => void): Promise<readonly ArchitectureReviewArtifact[]> {
+  const uploaded: ArchitectureReviewArtifact[] = []
   for (const file of files) {
     const bytes = new Uint8Array(await file.arrayBuffer())
     let binary = ''
@@ -1329,12 +1278,13 @@ async function uploadSources(reviewId: string, files: readonly File[], onUploade
     for (let offset = 0; offset < bytes.length; offset += chunkSize) {
       binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)))
     }
-    await requestJson(`${ARCHITECTURE_REVIEW_REVIEW_PREFIX}${encodeURIComponent(reviewId)}/artifacts`, {
+    uploaded.push(await requestJson<ArchitectureReviewArtifact>(`${ARCHITECTURE_REVIEW_REVIEW_PREFIX}${encodeURIComponent(reviewId)}/artifacts`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: file.name, contentBase64: btoa(binary) }),
-    })
+    }))
     onUploaded?.(file)
   }
+  return uploaded
 }
 
 function rememberOperation(operation: ArchitectureReviewOperation): void {
